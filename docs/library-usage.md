@@ -4,6 +4,10 @@ DDSCPP는 C++20 애플리케이션에서 RTI Connext DDS를 간단한 typed API�
 사용하기 위한 라이브러리입니다. C# `DdsAmbassador.DDSClient`와 같은 설정,
 topic 이름, 메시지 정의, QoS 및 API 흐름을 사용합니다.
 
+처음 사용하는 개발자는 [XML 설정 안내서](configuration.md)도 함께 읽으세요.
+세 가지 `dds_client` 파일의 차이, 선택 우선순위, 편집 가능한 항목과 재빌드가
+필요한 항목을 예제와 함께 설명합니다.
+
 ## 1. 준비 사항
 
 - C++20 컴파일러와 CMake 3.20 이상
@@ -106,6 +110,8 @@ auto client = dds_cpp::DdsClient::Connect();
 
 실행 파일 주변, 현재 디렉터리와 상위 디렉터리, 설치된
 `share/dds_cpp/definitions`에서 `definitions/dds_client.xml`을 찾습니다.
+현재 기본 파일의 transport는 `InMemory`이므로 다른 프로세스나 장비와 실제
+DDS 통신을 하지 않습니다. 실제 통신에는 다음 절의 RTI 설정 파일을 명시하세요.
 
 ### 설정 파일 지정
 
