@@ -70,7 +70,7 @@ std::vector<std::string> find_tags(const std::string& xml, const std::string& ta
 
         const auto end = xml.find('>', after_name);
         if (end == std::string::npos) {
-            break;
+            throw DdsConfigurationException("Malformed <" + tag_name + "> tag is missing '>'.");
         }
 
         tags.push_back(xml.substr(begin, end - begin + 1));
@@ -91,12 +91,30 @@ std::string without_comments(std::string xml)
 
         const auto end = xml.find("-->", begin + 4);
         if (end == std::string::npos) {
-            xml.erase(begin);
-            return xml;
+            throw DdsConfigurationException("XML contains an unterminated comment.");
         }
 
         xml.erase(begin, end - begin + 3);
         search_from = begin;
+    }
+}
+
+void require_root_element(const std::string& xml, const std::string& name, const std::string& source)
+{
+    std::size_t root = 0;
+    while ((root = xml.find('<', root)) != std::string::npos &&
+           root + 1 < xml.size() && (xml[root + 1] == '?' || xml[root + 1] == '!')) {
+        const auto end = xml.find('>', root + 2);
+        if (end == std::string::npos) break;
+        root = end + 1;
+    }
+    const auto opening = "<" + name;
+    const auto after_name = root == std::string::npos ? std::string::npos : root + opening.size();
+    const auto correct_opening = root != std::string::npos && xml.compare(root, opening.size(), opening) == 0 &&
+        after_name < xml.size() &&
+        (std::isspace(static_cast<unsigned char>(xml[after_name])) != 0 || xml[after_name] == '>');
+    if (!correct_opening || xml.find("</" + name + ">", after_name) == std::string::npos) {
+        throw DdsConfigurationException(source + " root element must be <" + name + ">.");
     }
 }
 
@@ -165,14 +183,38 @@ TopicDirection parse_direction(const std::string& value, const std::string& topi
 std::unordered_set<std::string> load_qos_profiles(const std::string& qos_profiles_xml_path)
 {
     const auto xml = without_comments(read_all(qos_profiles_xml_path));
+    require_root_element(xml, "dds", "qos_profiles.xml");
+    constexpr auto library_name = "AmbassadorProfiles";
+    std::size_t library_body_begin = std::string::npos;
+    for (const auto& tag : find_tags(xml, "qos_library")) {
+        if (attribute_value(tag, "name") == library_name) {
+            const auto library_start = xml.find(tag);
+            library_body_begin = library_start + tag.size();
+            break;
+        }
+    }
+
+    if (library_body_begin == std::string::npos) {
+        throw DdsConfigurationException(
+            "qos_profiles.xml must contain <qos_library name=\"AmbassadorProfiles\">.");
+    }
+
+    const auto library_end = xml.find("</qos_library>", library_body_begin);
+    if (library_end == std::string::npos) {
+        throw DdsConfigurationException(
+            "QoS library 'AmbassadorProfiles' is missing a closing </qos_library> tag.");
+    }
+
+    const auto library_body = xml.substr(library_body_begin, library_end - library_body_begin);
     std::unordered_set<std::string> profiles;
 
-    for (const auto& tag : find_tags(xml, "qos_profile")) {
+    for (const auto& tag : find_tags(library_body, "qos_profile")) {
         profiles.insert(attribute_value(tag, "name"));
     }
 
     if (profiles.empty()) {
-        throw DdsConfigurationException("qos_profiles.xml must contain at least one <qos_profile name=\"...\">.");
+        throw DdsConfigurationException(
+            "QoS library 'AmbassadorProfiles' must contain at least one <qos_profile name=\"...\">.");
     }
 
     return profiles;
@@ -181,6 +223,7 @@ std::unordered_set<std::string> load_qos_profiles(const std::string& qos_profile
 std::unordered_set<std::string> load_msg_structs(const std::string& dds_sim_xml_path)
 {
     const auto xml = without_comments(read_all(dds_sim_xml_path));
+    require_root_element(xml, "dds", "DDSSim.xml");
     const auto module_tags = find_tags(xml, "module");
 
     std::size_t module_start = std::string::npos;
@@ -222,6 +265,7 @@ std::vector<TopicDefinition> load_topics(
     const std::optional<std::unordered_set<std::string>>& message_types)
 {
     const auto xml = without_comments(read_all(topics_xml_path));
+    require_root_element(xml, "topics", "topics.xml");
     std::vector<TopicDefinition> topics;
     std::unordered_set<std::string> seen;
 

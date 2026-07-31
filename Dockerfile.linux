@@ -1,16 +1,11 @@
 ARG ROCKY_VERSION=9.7
-FROM rockylinux/rockylinux:${ROCKY_VERSION} AS build
+FROM rockylinux/rockylinux:${ROCKY_VERSION}
 
-ARG DDSCPP_ENABLE_RTI=OFF
-RUN dnf install -y gcc-c++ cmake make ca-certificates \
-    && dnf clean all
+RUN dnf install -y gcc-c++ cmake make binutils file tar gzip python3 findutils \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 
-WORKDIR /src
-COPY DDSCPP /src/DDSCPP
-COPY DDS_Nuget/definitions /src/DDS_Nuget/definitions
+COPY tools/build-linux.sh /usr/local/bin/build-ddscpp-linux
+RUN chmod 0755 /usr/local/bin/build-ddscpp-linux
 
-RUN cmake -S DDSCPP -B DDSCPP/build-linux \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DDDSCPP_ENABLE_RTI=${DDSCPP_ENABLE_RTI} \
-    && cmake --build DDSCPP/build-linux \
-    && ctest --test-dir DDSCPP/build-linux --output-on-failure
+ENTRYPOINT ["/usr/local/bin/build-ddscpp-linux"]

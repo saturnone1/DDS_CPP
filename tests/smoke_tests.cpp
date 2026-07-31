@@ -1,6 +1,7 @@
 #include "dds_cpp/dds_cpp.hpp"
 
 #include <chrono>
+#include <atomic>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstdint>
@@ -94,6 +95,115 @@ void test_in_memory(const std::filesystem::path& definitions)
 
     // A subscription is allowed to outlive its client and must not dereference a destroyed transport.
     subscription.reset();
+}
+
+void test_in_memory_rejects_conflicting_topic_type(const std::filesystem::path& definitions)
+{
+    auto client = dds_cpp::DdsClient::connect(in_memory_options(definitions));
+    auto subscription = client.subscribe<Tick>("TimeTickInformation", [](const Tick&) {});
+    bool threw = false;
+    try {
+        client.publish("TimeTickInformation", parity::TimeTickInformation{});
+    } catch (const dds_cpp::DdsOperationException&) {
+        threw = true;
+    }
+    require(threw, "In-memory topic accepted two different native sample types.");
+}
+
+void test_qos_library_name_is_validated(const std::filesystem::path& definitions)
+{
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("ddscpp-qos-library-" + std::to_string(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    const auto qos = directory / "qos_profiles.xml";
+    {
+        std::ofstream output(qos);
+        output << "<dds><qos_library name=\"WrongLibrary\">"
+                  "<qos_profile name=\"ReliableRealtime\"/>"
+                  "</qos_library></dds>";
+    }
+
+    auto options = in_memory_options(definitions);
+    options.qos_profiles_xml_path = qos.string();
+    bool threw = false;
+    try {
+        (void)dds_cpp::DdsConfigurationLoader::load(options);
+    } catch (const dds_cpp::DdsConfigurationException& exception) {
+        threw = std::string(exception.what()).find("AmbassadorProfiles") != std::string::npos;
+    }
+    std::filesystem::remove_all(directory);
+    require(threw, "A QoS profile from the wrong library was accepted.");
+}
+
+void test_configuration_root_is_validated(const std::filesystem::path& definitions)
+{
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("ddscpp-root-validation-" + std::to_string(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    const auto topics = directory / "topics.xml";
+    {
+        std::ofstream output(topics);
+        output << "<wrong><topic name=\"TimeTickInformation\" "
+                  "qos_profile=\"ReliableRealtime\" direction=\"Both\"/></wrong>";
+    }
+
+    bool threw = false;
+    try {
+        (void)dds_cpp::DdsConfigurationLoader::load(
+            topics.string(), (definitions / "qos_profiles.xml").string(),
+            (definitions / "DDSSim.xml").string());
+    } catch (const dds_cpp::DdsConfigurationException&) {
+        threw = true;
+    }
+    const auto config = directory / "dds_client.xml";
+    {
+        std::ofstream output(config);
+        output << "<wrong><transport>InMemory</transport></wrong>";
+    }
+    bool config_threw = false;
+    try {
+        (void)dds_cpp::DdsClientOptions::load(config.string());
+    } catch (const dds_cpp::DdsConfigurationException&) {
+        config_threw = true;
+    }
+    {
+        std::ofstream output(topics);
+        output << "<topics><topic name=\"TimeTickInformation\" "
+                  "qos_profile=\"ReliableRealtime\" direction=\"Both\"/><!--";
+    }
+    bool comment_threw = false;
+    try {
+        (void)dds_cpp::DdsConfigurationLoader::load(
+            topics.string(), (definitions / "qos_profiles.xml").string(),
+            (definitions / "DDSSim.xml").string());
+    } catch (const dds_cpp::DdsConfigurationException&) {
+        comment_threw = true;
+    }
+    std::filesystem::remove_all(directory);
+    require(threw, "A topics.xml file with the wrong root element was accepted.");
+    require(config_threw, "A DDS client config with the wrong root element was accepted.");
+    require(comment_threw, "An unterminated XML comment was accepted.");
+}
+
+void test_close_is_thread_safe(const std::filesystem::path& definitions)
+{
+    auto client = dds_cpp::DdsClient::connect(in_memory_options(definitions));
+    std::atomic_bool stop{false};
+    std::thread worker([&] {
+        while (!stop.load()) {
+            (void)client.is_open();
+            try {
+                client.publish("TimeTickInformation", Tick{});
+            } catch (const dds_cpp::DdsOperationException&) {
+            }
+        }
+    });
+    client.close();
+    stop = true;
+    worker.join();
+    require(!client.is_open(), "Concurrent close left the client open.");
 }
 
 void test_nuget_api_parity(const std::filesystem::path& definitions)
@@ -267,9 +377,11 @@ void test_rti(const std::filesystem::path& definitions)
     std::condition_variable changed;
     bool received = false;
     std::uint64_t received_tick = 0;
-    auto subscription = subscriber.subscribe<MSG::TimeTickInformation>(
+    std::unique_ptr<dds_cpp::Subscription> subscription;
+    subscription = subscriber.subscribe<MSG::TimeTickInformation>(
         "TimeTickInformation",
         [&](const MSG::TimeTickInformation& sample) {
+            subscription.reset();
             std::lock_guard lock(mutex);
             received_tick = sample.TimeTickMessage().TimeTick();
             received = true;
@@ -302,6 +414,10 @@ int main()
         const auto definitions = find_repo_root() / "DDS_Nuget" / "definitions";
         test_configuration(definitions);
         test_in_memory(definitions);
+        test_in_memory_rejects_conflicting_topic_type(definitions);
+        test_qos_library_name_is_validated(definitions);
+        test_configuration_root_is_validated(definitions);
+        test_close_is_thread_safe(definitions);
         test_nuget_api_parity(definitions);
         test_close_and_reconnect(definitions);
         test_direction_policy_matches_nuget(definitions);

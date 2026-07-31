@@ -3,12 +3,15 @@
 #include <iostream>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
+#include <thread>
 #include <sstream>
 #include <typeindex>
 #include <unordered_map>
@@ -174,38 +177,148 @@ private:
     dds::pub::DataWriter<T> writer_;
 };
 
+template <class T> class TypedRtiSubscriptionState;
+
 template <class T>
 class TypedReaderListener final : public dds::sub::NoOpDataReaderListener<T> {
 public:
-    TypedReaderListener(TypedSampleHandler handler, DdsLogLevel log_level)
-        : handler_(std::move(handler))
-        , log_level_(log_level)
+    void set_owner(std::weak_ptr<TypedRtiSubscriptionState<T>> owner)
     {
+        owner_ = std::move(owner);
     }
 
     void on_data_available(dds::sub::DataReader<T>& reader) override
     {
-        try {
-            auto samples = reader.take();
-            for (const auto& sample : samples) {
-                if (sample.info().valid()) {
-                    handler_(&sample.data());
-                }
-            }
-        } catch (const std::exception& ex) {
-            if (log_level_ != DdsLogLevel::None) {
-                std::cerr << "DDS subscriber handler failed: " << ex.what() << '\n';
-            }
-        } catch (...) {
-            if (log_level_ != DdsLogLevel::None) {
-                std::cerr << "DDS subscriber handler failed with an unknown exception.\n";
-            }
+        if (const auto owner = owner_.lock()) {
+            owner->on_data_available(reader);
         }
     }
 
 private:
+    std::weak_ptr<TypedRtiSubscriptionState<T>> owner_;
+};
+
+template <class T>
+class TypedRtiSubscriptionState final
+    : public std::enable_shared_from_this<TypedRtiSubscriptionState<T>> {
+public:
+    static std::shared_ptr<TypedRtiSubscriptionState> create(
+        std::shared_ptr<void> transport_owner,
+        const dds::domain::DomainParticipant& participant,
+        const dds::sub::Subscriber& subscriber,
+        dds::core::QosProvider& qos_provider,
+        const TopicDefinition& definition,
+        TypedSampleHandler handler,
+        DdsLogLevel log_level)
+    {
+        auto state = std::shared_ptr<TypedRtiSubscriptionState>(new TypedRtiSubscriptionState(
+            std::move(transport_owner), participant, definition, std::move(handler), log_level));
+        state->listener_.set_owner(state);
+        state->reader_.emplace(
+            subscriber,
+            state->topic_,
+            qos_provider.datareader_qos(qualified_profile(definition)),
+            &state->listener_,
+            dds::core::status::StatusMask::data_available());
+        return state;
+    }
+
+    void on_data_available(dds::sub::DataReader<T>& reader)
+    {
+        std::lock_guard callback_lock(callback_mutex_);
+        if (closing_) return;
+
+        struct CallbackScope final {
+            explicit CallbackScope(const TypedRtiSubscriptionState* state)
+                : previous(active_callback_)
+            {
+                active_callback_ = state;
+            }
+            ~CallbackScope() { active_callback_ = previous; }
+            const TypedRtiSubscriptionState* previous;
+        } callback_scope(this);
+
+        try {
+            auto samples = reader.take();
+            for (const auto& sample : samples) {
+                if (!sample.info().valid()) continue;
+                try {
+                    handler_(&sample.data());
+                } catch (const std::exception& ex) {
+                    if (log_level_ != DdsLogLevel::None) {
+                        std::cerr << "DDS subscriber handler failed: " << ex.what() << '\n';
+                    }
+                } catch (...) {
+                    if (log_level_ != DdsLogLevel::None) {
+                        std::cerr << "DDS subscriber handler failed with an unknown exception.\n";
+                    }
+                }
+                if (closing_) return;
+            }
+        } catch (const std::exception& ex) {
+            if (log_level_ != DdsLogLevel::None) {
+                std::cerr << "DDS reader failed: " << ex.what() << '\n';
+            }
+        }
+    }
+
+    void request_close() noexcept
+    {
+        if (closing_.exchange(true)) return;
+        if (active_callback_ != this) {
+            close();
+            return;
+        }
+
+        auto self = this->shared_from_this();
+        failed_cleanup_retainer_ = self;
+        try {
+            std::thread([self] { self->close(); }).detach();
+            failed_cleanup_retainer_.reset();
+        } catch (...) {
+            // Resource exhaustion must not terminate a destructor running in a DDS callback.
+            // Retaining the state is safer than destroying the reader/listener while RTI is using it.
+            // The self-reference is intentionally retained as a last-resort leak.
+        }
+    }
+
+private:
+    TypedRtiSubscriptionState(
+        std::shared_ptr<void> owner,
+        const dds::domain::DomainParticipant& participant,
+        const TopicDefinition& definition,
+        TypedSampleHandler handler,
+        DdsLogLevel log_level)
+        : owner_(std::move(owner))
+        , topic_(participant, definition.name)
+        , handler_(std::move(handler))
+        , log_level_(log_level)
+    {
+    }
+
+    void close() noexcept
+    {
+        std::lock_guard callback_lock(callback_mutex_);
+        try {
+            if (reader_) {
+                reader_->listener(nullptr, dds::core::status::StatusMask::none());
+                reader_->close();
+            }
+        } catch (...) {
+        }
+    }
+
+private:
+    std::shared_ptr<void> owner_;
+    dds::topic::Topic<T> topic_;
+    TypedReaderListener<T> listener_;
     TypedSampleHandler handler_;
     DdsLogLevel log_level_;
+    std::optional<dds::sub::DataReader<T>> reader_;
+    std::mutex callback_mutex_;
+    std::atomic_bool closing_{false};
+    std::shared_ptr<TypedRtiSubscriptionState> failed_cleanup_retainer_;
+    inline static thread_local const TypedRtiSubscriptionState* active_callback_ = nullptr;
 };
 
 template <class T>
@@ -219,32 +332,19 @@ public:
         const TopicDefinition& definition,
         TypedSampleHandler handler,
         DdsLogLevel log_level)
-        : owner_(std::move(owner))
-        , topic_(participant, definition.name)
-        , listener_(std::move(handler), log_level)
-        , reader_(
-              subscriber,
-              topic_,
-              qos_provider.datareader_qos(qualified_profile(definition)),
-              &listener_,
-              dds::core::status::StatusMask::data_available())
+        : state_(TypedRtiSubscriptionState<T>::create(
+              std::move(owner), participant, subscriber, qos_provider, definition,
+              std::move(handler), log_level))
     {
     }
 
     ~TypedRtiSubscription() override
     {
-        try {
-            reader_.listener(nullptr, dds::core::status::StatusMask::none());
-            reader_.close();
-        } catch (...) {
-        }
+        state_->request_close();
     }
 
 private:
-    std::shared_ptr<void> owner_;
-    dds::topic::Topic<T> topic_;
-    TypedReaderListener<T> listener_;
-    dds::sub::DataReader<T> reader_;
+    std::shared_ptr<TypedRtiSubscriptionState<T>> state_;
 };
 
 } // namespace
@@ -294,6 +394,9 @@ public:
 
 #define DDSCPP_REGISTER_RTI_TYPE(cpp_type, enum_name, dds_name) \
         if (type == typeid(cpp_type)) { \
+            if (topic.name != dds_name) { \
+                throw DdsOperationException("Topic '" + topic.name + "' requires generated type '" + topic.name + "'."); \
+            } \
             return std::make_unique<TypedRtiSubscription<cpp_type>>( \
                 shared_from_this(), participant_, subscriber_, qos_provider_, topic, std::move(handler), options_.log_level); \
         }
@@ -324,6 +427,9 @@ private:
     {
 #define DDSCPP_REGISTER_RTI_TYPE(cpp_type, enum_name, dds_name) \
         if (type == typeid(cpp_type)) { \
+            if (topic.name != dds_name) { \
+                throw DdsOperationException("Topic '" + topic.name + "' requires generated type '" + topic.name + "'."); \
+            } \
             return std::make_unique<TypedWriter<cpp_type>>(participant_, publisher_, qos_provider_, topic); \
         }
 #include "dds_cpp_rti_type_registry.inc"

@@ -3,13 +3,17 @@ cmake_minimum_required(VERSION 3.20)
 project(DdsAmbassadorDDSCPP VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 option(DDSCPP_BUILD_STATIC "Build the DDSCPP static library." ON)
 option(DDSCPP_BUILD_SHARED "Build the DDSCPP shared library." ON)
 option(DDSCPP_BUILD_TESTS "Build DDSCPP smoke tests." ON)
 option(DDSCPP_BUILD_CLI "Build the NuGet-compatible ddsclient CLI when RTI is enabled." ON)
 option(DDSCPP_ENABLE_RTI "Generate DDS types and enable the RTI Connext transport." ON)
+option(DDSCPP_INSTALL_RTI_RUNTIME "Install RTI runtime libraries beside DDSCPP (check your RTI redistribution terms first)." OFF)
 set(DDSCPP_RTI_HOME "" CACHE PATH "RTI Connext DDS installation directory (NDDSHOME).")
+set(DDSCPP_RTI_PLATFORM "" CACHE STRING "Optional RTI target directory name or absolute path.")
+set(DDSCPP_RTI_PRODUCT_VERSION "" CACHE STRING "RTI product version recorded in installed package metadata.")
 set(DDSCPP_DEFINITIONS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../DDS_Nuget/definitions" CACHE PATH "DDS XML definitions directory.")
 set(DDSCPP_PREGENERATED_DIR "" CACHE PATH "Optional pre-generated DDSSim C++ directory for cross-host builds.")
 
@@ -114,7 +118,16 @@ if(DDSCPP_ENABLE_RTI)
     set_source_files_properties(${DDSCPP_GENERATED_FILES} PROPERTIES GENERATED TRUE)
 
     set(RTI_PLATFORM_DIR "")
-    if(WIN32)
+    if(DDSCPP_RTI_PLATFORM)
+        if(IS_ABSOLUTE "${DDSCPP_RTI_PLATFORM}")
+            set(RTI_PLATFORM_DIR "${DDSCPP_RTI_PLATFORM}")
+        else()
+            set(RTI_PLATFORM_DIR "${DDSCPP_RTI_HOME}/lib/${DDSCPP_RTI_PLATFORM}")
+        endif()
+        if(NOT IS_DIRECTORY "${RTI_PLATFORM_DIR}")
+            message(FATAL_ERROR "Requested RTI platform directory does not exist: ${RTI_PLATFORM_DIR}")
+        endif()
+    elseif(WIN32)
         file(GLOB rti_platform_candidates LIST_DIRECTORIES true "${DDSCPP_RTI_HOME}/lib/x64Win64VS*")
         if(rti_platform_candidates)
             list(SORT rti_platform_candidates COMPARE NATURAL ORDER DESCENDING)
@@ -136,6 +149,14 @@ if(DDSCPP_ENABLE_RTI)
     endif()
     if(NOT RTI_PLATFORM_DIR)
         message(FATAL_ERROR "Could not determine the RTI platform library directory under ${DDSCPP_RTI_HOME}/lib.")
+    endif()
+    get_filename_component(DDSCLIENT_RTI_PLATFORM_NAME "${RTI_PLATFORM_DIR}" NAME)
+    if(NOT DDSCPP_RTI_PRODUCT_VERSION AND EXISTS "${DDSCPP_RTI_HOME}/rti_versions.xml")
+        file(READ "${DDSCPP_RTI_HOME}/rti_versions.xml" rti_versions_xml)
+        string(REGEX MATCH "<base_version>[ \\t\\r\\n]*([^<]+)" rti_version_match "${rti_versions_xml}")
+        if(CMAKE_MATCH_1)
+            string(STRIP "${CMAKE_MATCH_1}" DDSCPP_RTI_PRODUCT_VERSION)
+        endif()
     endif()
 
     target_compile_definitions(dds_cpp_objects PUBLIC DDSCPP_ENABLE_RTI=1)
@@ -255,7 +276,9 @@ if(DDSCPP_BUILD_TESTS)
     target_link_libraries(dds_cpp_smoke_tests PRIVATE dds_cpp_objects)
     target_include_directories(dds_cpp_smoke_tests PRIVATE include)
     add_test(NAME dds_cpp_smoke_tests COMMAND dds_cpp_smoke_tests)
-    set_tests_properties(dds_cpp_smoke_tests PROPERTIES TIMEOUT 30)
+    set_tests_properties(dds_cpp_smoke_tests PROPERTIES
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     set(DDS_CONTRACT_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/../DDS_Nuget/tools/validate-dds.py")
     if(Python3_Interpreter_FOUND AND EXISTS "${DDS_CONTRACT_VALIDATOR}")
@@ -333,7 +356,7 @@ if(DDSCPP_ENABLE_RTI)
         "${DDSCPP_GENERATED_DIR}/DDSSim.hpp"
         "${DDSCPP_GENERATED_DIR}/DDSSimPlugin.hpp"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-    if(WIN32)
+    if(DDSCPP_INSTALL_RTI_RUNTIME AND WIN32)
         install(FILES
             "${RTI_PLATFORM_DIR}/nddscpp2.dll"
             "${RTI_PLATFORM_DIR}/nddsc.dll"
@@ -350,7 +373,7 @@ if(DDSCPP_ENABLE_RTI)
             "${RTI_PLATFORM_DIR}/rtixml2d.dll"
             DESTINATION "${CMAKE_INSTALL_BINDIR}"
             CONFIGURATIONS Debug)
-    elseif(UNIX)
+    elseif(DDSCPP_INSTALL_RTI_RUNTIME AND UNIX)
         file(GLOB DDSCPP_RTI_RUNTIME_LIBS
             "${RTI_PLATFORM_DIR}/libnddscpp2.so*"
             "${RTI_PLATFORM_DIR}/libnddsc.so*"
@@ -362,3 +385,21 @@ if(DDSCPP_ENABLE_RTI)
             DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     endif()
 endif()
+
+set(DDSCLIENT_HAS_STATIC ${DDSCPP_BUILD_STATIC})
+set(DDSCLIENT_HAS_SHARED ${DDSCPP_BUILD_SHARED})
+if(NOT DEFINED DDSCLIENT_RTI_PLATFORM_NAME)
+    set(DDSCLIENT_RTI_PLATFORM_NAME "")
+endif()
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DDSClientConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/DDSClientConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/DDSClient")
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/DDSClientConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/DDSClientConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/DDSClientConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/DDSClient")
