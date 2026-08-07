@@ -112,8 +112,8 @@ resolved from the unqualified C++ type name, exactly like C# `typeof(T).Name`.
 `CreatePublisher<T>()`, `CreateSubscriber<T>()`, explicit-topic overloads,
 direction validation, configuration access, and publisher handles are also
 available. See [docs/api-parity.md](docs/api-parity.md) for the complete mapping.
-한국어 설치·연결·API 예제는 [docs/library-usage.md](docs/library-usage.md)를
-참고하세요.
+Installation, connection and API examples are in
+[docs/library-usage.md](docs/library-usage.md) (Korean).
 
 ## NuGet-compatible CLI
 
