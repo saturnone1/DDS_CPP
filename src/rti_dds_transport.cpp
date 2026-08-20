@@ -47,6 +47,22 @@ std::string environment_value(const char* name)
     return value == nullptr ? std::string{} : trim(value);
 }
 
+// Upper bound for a single shutdown step. Matches the .NET client's knob so a
+// deployment tunes both the same way.
+std::chrono::milliseconds resolve_shutdown_timeout()
+{
+    const auto value = environment_value("DDS_SHUTDOWN_TIMEOUT_MS");
+    if (!value.empty()) {
+        try {
+            const auto parsed = std::stoi(value);
+            if (parsed > 0) return std::chrono::milliseconds(parsed);
+        } catch (const std::exception&) {
+            // Fall through to the default rather than failing shutdown over a bad value.
+        }
+    }
+    return std::chrono::milliseconds(10000);
+}
+
 void validate_multicast_address(const std::string& value)
 {
     std::array<int, 4> octets{};
@@ -298,7 +314,30 @@ private:
 
     void close() noexcept
     {
-        std::lock_guard callback_lock(callback_mutex_);
+        // Bounded, because on_data_available holds this mutex for the whole duration of
+        // the user's handler. A handler that never returns used to block close() - and
+        // therefore shutdown - forever.
+        std::unique_lock<std::timed_mutex> callback_lock(callback_mutex_, std::defer_lock);
+        if (!callback_lock.try_lock_for(resolve_shutdown_timeout())) {
+            if (log_level_ != DdsLogLevel::None) {
+                std::cerr << "DDS subscriber handler did not finish within the shutdown timeout; "
+                             "the reader was left open to avoid closing entities still in use.\n";
+            }
+
+            // Detaching the listener or closing the reader while a handler is still
+            // inside it would fault in native code. Retain this state instead: through
+            // owner_ that also keeps the participant alive, so nothing is torn down
+            // underneath RTI. Process exit reclaims it. The .NET client leaves the
+            // participant undeleted in the same situation, for the same reason.
+            try {
+                failed_cleanup_retainer_ = this->shared_from_this();
+            } catch (...) {
+                // shared_from_this can only fail if no owner remains, in which case
+                // there is nothing left to protect.
+            }
+            return;
+        }
+
         try {
             if (reader_) {
                 reader_->listener(nullptr, dds::core::status::StatusMask::none());
@@ -315,7 +354,7 @@ private:
     TypedSampleHandler handler_;
     DdsLogLevel log_level_;
     std::optional<dds::sub::DataReader<T>> reader_;
-    std::mutex callback_mutex_;
+    std::timed_mutex callback_mutex_;
     std::atomic_bool closing_{false};
     std::shared_ptr<TypedRtiSubscriptionState> failed_cleanup_retainer_;
     inline static thread_local const TypedRtiSubscriptionState* active_callback_ = nullptr;
