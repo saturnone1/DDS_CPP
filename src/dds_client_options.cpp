@@ -76,6 +76,25 @@ std::string without_comments(std::string xml)
     return xml;
 }
 
+void require_client_root(const std::string& xml)
+{
+    std::size_t root = 0;
+    while ((root = xml.find('<', root)) != std::string::npos &&
+           root + 1 < xml.size() && (xml[root + 1] == '?' || xml[root + 1] == '!')) {
+        const auto end = xml.find('>', root + 2);
+        if (end == std::string::npos) break;
+        root = end + 1;
+    }
+    constexpr std::string_view opening = "<dds_client";
+    const auto after_name = root == std::string::npos ? std::string::npos : root + opening.size();
+    const auto correct_opening = root != std::string::npos && xml.compare(root, opening.size(), opening) == 0 &&
+        after_name < xml.size() &&
+        (std::isspace(static_cast<unsigned char>(xml[after_name])) != 0 || xml[after_name] == '>');
+    if (!correct_opening || xml.find("</dds_client>", after_name) == std::string::npos) {
+        throw DdsConfigurationException("DDS client config root element must be <dds_client>.");
+    }
+}
+
 std::optional<std::string> element_value(const std::string& xml, const std::string& name)
 {
     const auto open = "<" + name + ">";
@@ -188,6 +207,7 @@ DdsClientOptions DdsClientOptions::load(const std::optional<std::string>& reques
     if (config.has_value()) {
         options.config_path = config->string();
         const auto xml = without_comments(read_all(*config));
+        require_client_root(xml);
         const auto base = config->parent_path();
         config_base = base;
 

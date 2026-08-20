@@ -77,6 +77,27 @@ DdsClient::DdsClient(DdsClientOptions options, DdsConfiguration configuration, s
     }
 }
 
+DdsClient::DdsClient(DdsClient&& other) noexcept
+    : options_(std::move(other.options_))
+    , configuration_(std::move(other.configuration_))
+{
+    std::lock_guard lock(other.transport_mutex_);
+    transport_ = std::move(other.transport_);
+}
+
+DdsClient& DdsClient::operator=(DdsClient&& other) noexcept
+{
+    if (this == &other) {
+        return *this;
+    }
+
+    std::scoped_lock lock(transport_mutex_, other.transport_mutex_);
+    options_ = std::move(other.options_);
+    configuration_ = std::move(other.configuration_);
+    transport_ = std::move(other.transport_);
+    return *this;
+}
+
 const TopicDefinition& DdsClient::resolve_topic(const std::type_info& sample_type) const
 {
     std::string full_name;
@@ -108,11 +129,19 @@ DdsClient::~DdsClient()
 
 void DdsClient::close() noexcept
 {
+    std::lock_guard lock(transport_mutex_);
     transport_.reset();
+}
+
+bool DdsClient::is_open() const noexcept
+{
+    std::lock_guard lock(transport_mutex_);
+    return transport_ != nullptr;
 }
 
 std::shared_ptr<DdsTransport> DdsClient::require_transport() const
 {
+    std::lock_guard lock(transport_mutex_);
     if (!transport_) {
         throw DdsOperationException("The DDS client is closed.");
     }

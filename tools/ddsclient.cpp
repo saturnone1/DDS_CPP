@@ -35,9 +35,9 @@ struct CliOptions {
     int interval_ms{};
 };
 
-std::atomic_bool stopped{false};
+volatile std::sig_atomic_t stopped = 0;
 
-void on_signal(int) { stopped = true; }
+void on_signal(int) { stopped = 1; }
 
 std::string lower(std::string value)
 {
@@ -81,7 +81,13 @@ CliOptions parse_options(const std::vector<std::string>& args)
         else if (args[i] == "--timeout-ms") options.timeout_ms = read_integer(args, i, false);
         else if (args[i] == "--repeat") options.repeat = read_integer(args, i, true);
         else if (args[i] == "--interval-ms") options.interval_ms = read_integer(args, i, false);
-        else if (options.topic.empty()) options.topic = args[i];
+        else if (!args[i].empty() && args[i].front() == '-') {
+            throw std::invalid_argument("알 수 없는 옵션입니다: " + args[i]);
+        } else if (options.topic.empty()) options.topic = args[i];
+        else throw std::invalid_argument("예상하지 않은 추가 인수입니다: " + args[i]);
+    }
+    if (!options.json_path.empty() && options.read_stdin) {
+        throw std::invalid_argument("--json과 --stdin은 동시에 사용할 수 없습니다.");
     }
     return options;
 }
@@ -130,7 +136,11 @@ std::string normalize_json_names(std::string json)
             ++cursor;
         }
         if (cursor >= json.size()) break;
-        if (!escaped) {
+        auto after_quote = cursor + 1;
+        while (after_quote < json.size() &&
+               std::isspace(static_cast<unsigned char>(json[after_quote]))) ++after_quote;
+        const auto is_member_name = after_quote < json.size() && json[after_quote] == ':';
+        if (!escaped && is_member_name) {
             const auto value = json.substr(value_begin, cursor - value_begin);
             if (const auto found = canonical_names.find(lower(value)); found != canonical_names.end()) {
                 json.replace(value_begin, cursor - value_begin, found->second);
@@ -190,7 +200,7 @@ ENUM::SimulatorID simulator_id(const char* variable, ENUM::SimulatorID default_v
     DDSCPP_SIM_ID(ELU); DDSCPP_SIM_ID(ATS_A); DDSCPP_SIM_ID(ATS_B); DDSCPP_SIM_ID(ATS_C);
     DDSCPP_SIM_ID(ATS_D); DDSCPP_SIM_ID(MSS_A); DDSCPP_SIM_ID(MSS_B);
 #undef DDSCPP_SIM_ID
-    return default_value;
+    throw std::invalid_argument(std::string(variable) + " has an invalid SimulatorID value: " + value);
 }
 
 template <class T>

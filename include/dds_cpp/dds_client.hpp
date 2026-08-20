@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <functional>
 #include <iostream>
 #include <span>
@@ -78,14 +79,14 @@ public:
 
     DdsClient(const DdsClient&) = delete;
     DdsClient& operator=(const DdsClient&) = delete;
-    DdsClient(DdsClient&&) noexcept = default;
-    DdsClient& operator=(DdsClient&&) noexcept = default;
+    DdsClient(DdsClient&& other) noexcept;
+    DdsClient& operator=(DdsClient&& other) noexcept;
     ~DdsClient();
 
     void close() noexcept;
     void Close() noexcept { close(); }
     void Dispose() noexcept { close(); }
-    [[nodiscard]] bool is_open() const noexcept { return transport_ != nullptr; }
+    [[nodiscard]] bool is_open() const noexcept;
 
     [[nodiscard]] const DdsClientOptions& options() const noexcept;
     [[nodiscard]] const DdsConfiguration& configuration() const noexcept;
@@ -182,6 +183,7 @@ private:
 
     DdsClientOptions options_;
     DdsConfiguration configuration_;
+    mutable std::mutex transport_mutex_;
     std::shared_ptr<DdsTransport> transport_;
 };
 

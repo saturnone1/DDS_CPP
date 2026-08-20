@@ -53,18 +53,24 @@ cmake -S DDSCPP -B DDSCPP/build-linux \
   -DDDSCPP_PREGENERATED_DIR=/src/DDSCPP/build/generated
 ```
 
-An in-memory Linux container build that does not require proprietary RTI files
-is also provided:
+The repository-level Windows entry point builds the RTI-enabled Rocky Linux
+package, validates both link modes, and creates a tarball:
 
-```bash
-docker build -f DDSCPP/Dockerfile.linux -t ddscpp-linux .
+```powershell
+.\build-linux.ps1
 ```
 
-Override the base image for a compatibility build, for example:
+The Dockerfile builds only the reusable GCC builder image. Source, generated
+types, the RTI installation, and the output directory are mounted by
+`build-linux.ps1`; proprietary RTI files are not copied into the image. See
+`BUILD-LINUX.md` at the repository root for offline image transfer and package
+consumption instructions.
+
+To build the image manually:
 
 ```bash
-docker build --build-arg ROCKY_VERSION=10 -f DDSCPP/Dockerfile.linux \
-  -t ddscpp-rocky10 .
+docker build --build-arg ROCKY_VERSION=9.7 \
+  -f DDSCPP/Dockerfile.linux -t ddsclient-rocky9-builder:latest DDSCPP
 ```
 
 The container build uses `rockylinux/rockylinux:9.7`. RTI Connext DDS 7.3.1
@@ -74,6 +80,17 @@ also been build-and-runtime tested on Rocky Linux 10 with GCC 14.3/glibc 2.39,
 but Rocky/RHEL 10 is not an officially listed Connext 7.3.1 target. Use a
 Connext release that explicitly supports RHEL 10 when vendor-supported Rocky 10
 production deployment is required.
+
+Installed packages include `DDSClientConfig.cmake`. Consumers can select the
+shared library (default) or static library without manually listing RTI system
+dependencies:
+
+```cmake
+set(DDSClient_RTI_HOME "/opt/rti_connext_dds-7.3.1")
+# set(DDSClient_USE_STATIC_LIBS ON)
+find_package(DDSClient CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE DDSClient::dds_cpp)
+```
 
 ## Definitions workflow
 

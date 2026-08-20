@@ -5,6 +5,8 @@
 #include <typeindex>
 #include <utility>
 
+#include "dds_cpp/dds_exception.hpp"
+
 namespace dds_cpp {
 
 namespace {
@@ -20,12 +22,40 @@ struct Subscriber final {
     TypedSampleHandler typed_handler;
 };
 
+struct TopicType final {
+    SubscriberKind kind{SubscriberKind::Bytes};
+    std::string byte_type_name;
+    std::type_index native_type{typeid(void)};
+};
+
 } // namespace
 
 struct InMemoryDdsTransport::State final {
     std::mutex mutex;
     std::uint64_t next_id{1};
     std::unordered_map<std::string, std::vector<Subscriber>> subscribers;
+    std::unordered_map<std::string, TopicType> topic_types;
+
+    void bind_bytes(const TopicDefinition& topic, const std::string& sample_type_name)
+    {
+        const auto [it, inserted] = topic_types.try_emplace(
+            topic.name, TopicType{SubscriberKind::Bytes, sample_type_name, typeid(void)});
+        if (!inserted &&
+            (it->second.kind != SubscriberKind::Bytes || it->second.byte_type_name != sample_type_name)) {
+            throw DdsOperationException("Topic '" + topic.name + "' is already bound to a different sample type.");
+        }
+    }
+
+    void bind_typed(const TopicDefinition& topic, const std::type_info& sample_type)
+    {
+        const auto native_type = std::type_index(sample_type);
+        const auto [it, inserted] = topic_types.try_emplace(
+            topic.name, TopicType{SubscriberKind::Typed, {}, native_type});
+        if (!inserted &&
+            (it->second.kind != SubscriberKind::Typed || it->second.native_type != native_type)) {
+            throw DdsOperationException("Topic '" + topic.name + "' is already bound to a different sample type.");
+        }
+    }
 
     void unsubscribe(std::uint64_t id, const std::string& topic_name)
     {
@@ -79,8 +109,10 @@ InMemoryDdsTransport::InMemoryDdsTransport()
 
 InMemoryDdsTransport::~InMemoryDdsTransport() = default;
 
-void InMemoryDdsTransport::create_publisher(const TopicDefinition&, std::string)
+void InMemoryDdsTransport::create_publisher(const TopicDefinition& topic, std::string sample_type_name)
 {
+    std::lock_guard lock(state_->mutex);
+    state_->bind_bytes(topic, sample_type_name);
 }
 
 std::unique_ptr<Subscription> InMemoryDdsTransport::subscribe(
@@ -93,6 +125,7 @@ std::unique_ptr<Subscription> InMemoryDdsTransport::subscribe(
     }
 
     std::lock_guard lock(state_->mutex);
+    state_->bind_bytes(topic, sample_type_name);
     const auto id = state_->next_id++;
     state_->subscribers[topic.name].push_back(Subscriber{
         id,
@@ -109,6 +142,7 @@ void InMemoryDdsTransport::publish(const TopicDefinition& topic, std::string sam
     std::vector<Subscriber> snapshot;
     {
         std::lock_guard lock(state_->mutex);
+        state_->bind_bytes(topic, sample_type_name);
         const auto it = state_->subscribers.find(topic.name);
         if (it == state_->subscribers.end()) {
             return;
@@ -123,8 +157,12 @@ void InMemoryDdsTransport::publish(const TopicDefinition& topic, std::string sam
     }
 }
 
-void InMemoryDdsTransport::create_typed_publisher(const TopicDefinition&, const std::type_info&)
+void InMemoryDdsTransport::create_typed_publisher(
+    const TopicDefinition& topic,
+    const std::type_info& sample_type)
 {
+    std::lock_guard lock(state_->mutex);
+    state_->bind_typed(topic, sample_type);
 }
 
 std::unique_ptr<Subscription> InMemoryDdsTransport::subscribe_typed(
@@ -137,6 +175,7 @@ std::unique_ptr<Subscription> InMemoryDdsTransport::subscribe_typed(
     }
 
     std::lock_guard lock(state_->mutex);
+    state_->bind_typed(topic, sample_type);
     const auto id = state_->next_id++;
     state_->subscribers[topic.name].push_back(Subscriber{
         id,
@@ -160,6 +199,7 @@ void InMemoryDdsTransport::publish_typed(
     std::vector<Subscriber> snapshot;
     {
         std::lock_guard lock(state_->mutex);
+        state_->bind_typed(topic, sample_type);
         const auto it = state_->subscribers.find(topic.name);
         if (it == state_->subscribers.end()) {
             return;
