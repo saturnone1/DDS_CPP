@@ -2,56 +2,70 @@ cmake_minimum_required(VERSION 3.20)
 
 project(DdsAmbassadorDDSCPP VERSION 0.1.0 LANGUAGES CXX)
 
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    list(APPEND CMAKE_VS_GLOBALS
+        "ForceImportBeforeCppTargets=${CMAKE_CURRENT_SOURCE_DIR}/../tools/build/utf8.props")
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/artifacts/install" CACHE PATH "Install output directory" FORCE)
+endif()
+
+option(DDSCPP_BUILD_MODULES "Generate independent modules for every message XML." ON)
 option(DDSCPP_BUILD_STATIC "Build the DDSCPP static library." ON)
 option(DDSCPP_BUILD_SHARED "Build the DDSCPP shared library." ON)
-option(DDSCPP_BUILD_TESTS "Build DDSCPP smoke tests." ON)
-option(DDSCPP_BUILD_CLI "Build the NuGet-compatible ddsclient CLI when RTI is enabled." ON)
-option(DDSCPP_ENABLE_RTI "Generate DDS types and enable the RTI Connext transport." ON)
+option(DDSCPP_BUILD_TESTS "Build explicit sample-dependent tests." OFF)
+option(DDSCPP_BUILD_CLI "Build the explicit DDSSim CLI example." OFF)
+option(DDSCPP_ENABLE_RTI "RTI is required for the public DDS library." ON)
+if(NOT DDSCPP_ENABLE_RTI)
+    message(FATAL_ERROR "DDSCPP는 실제 RTI 전용입니다. InMemory는 내부 테스트 구현이며 빌드 모드가 아닙니다.")
+endif()
 option(DDSCPP_INSTALL_RTI_RUNTIME "Install RTI runtime libraries beside DDSCPP (check your RTI redistribution terms first)." OFF)
 set(DDSCPP_RTI_HOME "" CACHE PATH "RTI Connext DDS installation directory (NDDSHOME).")
 set(DDSCPP_RTI_PLATFORM "" CACHE STRING "Optional RTI target directory name or absolute path.")
 set(DDSCPP_RTI_PRODUCT_VERSION "" CACHE STRING "RTI product version recorded in installed package metadata.")
-set(DDSCPP_DEFINITIONS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../DDS_Nuget/definitions" CACHE PATH "DDS XML definitions directory.")
+set(DDSCPP_DEFINITIONS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../definitions" CACHE PATH "DDS XML definitions directory.")
 set(DDSCPP_PREGENERATED_DIR "" CACHE PATH "Optional pre-generated DDSSim C++ directory for cross-host builds.")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR "Windows RTI 라이브러리는 MSVC ABI가 필요합니다. Visual Studio 2022 이상의 x64 C++ 도구를 선택하세요.")
+endif()
+if(MSVC)
+    # 소스 및 공개 헤더의 한국어 문자열을 동일하게 해석합니다.
+    add_compile_options(/utf-8)
+endif()
 
-set(DDSCPP_PUBLIC_HEADERS
-    include/dds_cpp/dds_client.hpp
-    include/dds_cpp/dds_client_options.hpp
-    include/dds_cpp/dds_configuration.hpp
-    include/dds_cpp/dds_configuration_loader.hpp
-    include/dds_cpp/dds_cpp.hpp
-    include/dds_cpp/dds_exception.hpp
-    include/dds_cpp/generated_types.hpp
-    include/dds_cpp/dds_log_level.hpp
-    include/dds_cpp/dds_transport.hpp
-    include/dds_cpp/in_memory_dds_transport.hpp
-    include/dds_cpp/rti_dds_transport.hpp
-    include/dds_cpp/topic_definition.hpp
-    include/dds_cpp/topic_direction.hpp
-    include/dds_cpp/visibility.hpp)
+file(GLOB_RECURSE DDSCPP_PUBLIC_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp/*.hpp")
 
 set(DDSCPP_SOURCES
-    src/dds_client.cpp
-    src/dds_client_options.cpp
-    src/dds_configuration.cpp
-    src/dds_configuration_loader.cpp
-    src/dds_path_utils.cpp
-    src/in_memory_dds_transport.cpp
-    src/rti_dds_transport.cpp)
+    core/src/api/DdsClient.cpp
+    core/src/configuration/DdsConfiguration.cpp
+    core/src/configuration/DdsConfigurationReader.cpp
+    core/src/configuration/DdsClientOptionResolver.cpp
+    core/src/testing/InMemoryDdsTransport.cpp
+    core/src/transport/RtiDdsTransport.cpp)
 
+set(DDSCPP_PRIVATE_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp/api"
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp/configuration"
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp/transport"
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp/testing")
 add_library(dds_cpp_objects OBJECT ${DDSCPP_PUBLIC_HEADERS} ${DDSCPP_SOURCES})
 target_include_directories(dds_cpp_objects
+    PRIVATE ${DDSCPP_PRIVATE_INCLUDE_DIRS}
     PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/core/include>"
         "$<INSTALL_INTERFACE:include>")
 target_compile_features(dds_cpp_objects PUBLIC cxx_std_20)
+target_compile_options(dds_cpp_objects INTERFACE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 set_target_properties(dds_cpp_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
@@ -73,49 +87,8 @@ if(DDSCPP_ENABLE_RTI)
         endif()
     endif()
     if(NOT DDSCPP_RTI_HOME)
-        message(FATAL_ERROR "RTI Connext DDS was not found. Set DDSCPP_RTI_HOME or NDDSHOME, or configure with DDSCPP_ENABLE_RTI=OFF.")
+        message(FATAL_ERROR "RTI Connext DDS를 찾을 수 없습니다. DDSCPP_RTI_HOME 또는 NDDSHOME을 지정하세요.")
     endif()
-
-    if(DDSCPP_PREGENERATED_DIR)
-        get_filename_component(DDSCPP_GENERATED_DIR "${DDSCPP_PREGENERATED_DIR}" ABSOLUTE)
-    else()
-        find_program(RTIDDSGEN_EXECUTABLE NAMES rtiddsgen rtiddsgen.bat
-            HINTS "${DDSCPP_RTI_HOME}/bin" NO_DEFAULT_PATH REQUIRED)
-        set(RTI_SCHEMA_DIR "${DDSCPP_RTI_HOME}/resource/schema")
-        set(DDSCPP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    endif()
-    set(DDSCPP_GENERATED_FILES
-        "${DDSCPP_GENERATED_DIR}/DDSSim.hpp"
-        "${DDSCPP_GENERATED_DIR}/DDSSim.cxx"
-        "${DDSCPP_GENERATED_DIR}/DDSSimPlugin.hpp"
-        "${DDSCPP_GENERATED_DIR}/DDSSimPlugin.cxx"
-        "${DDSCPP_GENERATED_DIR}/dds_cpp_rti_type_registry.inc"
-        "${DDSCPP_GENERATED_DIR}/dds_cpp_json_names.inc")
-    if(DDSCPP_PREGENERATED_DIR)
-        foreach(generated_file IN LISTS DDSCPP_GENERATED_FILES)
-            if(NOT EXISTS "${generated_file}")
-                message(FATAL_ERROR "Required pre-generated RTI file is missing: ${generated_file}")
-            endif()
-        endforeach()
-    else()
-        add_custom_command(
-            OUTPUT ${DDSCPP_GENERATED_FILES}
-            COMMAND "${CMAKE_COMMAND}"
-                -DRTIDDSGEN=${RTIDDSGEN_EXECUTABLE}
-                -DRTI_SCHEMA_DIR=${RTI_SCHEMA_DIR}
-                -DDDS_XML=${DDSCPP_DEFINITIONS_DIR}/DDSSim.xml
-                -DTOPICS_XML=${DDSCPP_DEFINITIONS_DIR}/topics.xml
-                -DOUTPUT_DIR=${DDSCPP_GENERATED_DIR}
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateRtiTypes.cmake"
-            DEPENDS
-                "${DDSCPP_DEFINITIONS_DIR}/DDSSim.xml"
-                "${DDSCPP_DEFINITIONS_DIR}/topics.xml"
-                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateRtiTypes.cmake"
-            VERBATIM
-            COMMENT "Generating RTI Connext C++ types and topic registry")
-    endif()
-    target_sources(dds_cpp_objects PRIVATE ${DDSCPP_GENERATED_FILES})
-    set_source_files_properties(${DDSCPP_GENERATED_FILES} PROPERTIES GENERATED TRUE)
 
     set(RTI_PLATFORM_DIR "")
     if(DDSCPP_RTI_PLATFORM)
@@ -125,7 +98,7 @@ if(DDSCPP_ENABLE_RTI)
             set(RTI_PLATFORM_DIR "${DDSCPP_RTI_HOME}/lib/${DDSCPP_RTI_PLATFORM}")
         endif()
         if(NOT IS_DIRECTORY "${RTI_PLATFORM_DIR}")
-            message(FATAL_ERROR "Requested RTI platform directory does not exist: ${RTI_PLATFORM_DIR}")
+            message(FATAL_ERROR "지정한 RTI 대상 플랫폼 폴더가 없습니다: ${RTI_PLATFORM_DIR}")
         endif()
     elseif(WIN32)
         file(GLOB rti_platform_candidates LIST_DIRECTORIES true "${DDSCPP_RTI_HOME}/lib/x64Win64VS*")
@@ -148,7 +121,7 @@ if(DDSCPP_ENABLE_RTI)
         endif()
     endif()
     if(NOT RTI_PLATFORM_DIR)
-        message(FATAL_ERROR "Could not determine the RTI platform library directory under ${DDSCPP_RTI_HOME}/lib.")
+        message(FATAL_ERROR "${DDSCPP_RTI_HOME}/lib 아래에서 RTI 대상 라이브러리를 찾지 못했습니다.")
     endif()
     get_filename_component(DDSCLIENT_RTI_PLATFORM_NAME "${RTI_PLATFORM_DIR}" NAME)
     if(NOT DDSCPP_RTI_PRODUCT_VERSION AND EXISTS "${DDSCPP_RTI_HOME}/rti_versions.xml")
@@ -165,8 +138,6 @@ if(DDSCPP_ENABLE_RTI)
     elseif(UNIX)
         target_compile_definitions(dds_cpp_objects PUBLIC RTI_LINUX=1 RTI_UNIX=1 RTI_64BIT=1)
     endif()
-    target_include_directories(dds_cpp_objects PUBLIC
-        "$<BUILD_INTERFACE:${DDSCPP_GENERATED_DIR}>")
     target_include_directories(dds_cpp_objects SYSTEM PUBLIC
         "$<BUILD_INTERFACE:${DDSCPP_RTI_HOME}/include>"
         "$<BUILD_INTERFACE:${DDSCPP_RTI_HOME}/include/ndds>"
@@ -185,7 +156,9 @@ if(DDSCPP_ENABLE_RTI)
         find_library(RTI_NDDSCPP2_LIBRARY NAMES nddscpp2 PATHS "${RTI_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
         find_library(RTI_NDDSC_LIBRARY NAMES nddsc PATHS "${RTI_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
         find_library(RTI_NDDSCORE_LIBRARY NAMES nddscore PATHS "${RTI_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
-        find_library(RTI_APPUTILS_LIBRARY NAMES rtiapputilsc PATHS "${RTI_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
+        if(DDSCPP_BUILD_CLI)
+            find_library(RTI_APPUTILS_LIBRARY NAMES rtiapputilsc PATHS "${RTI_PLATFORM_DIR}" NO_DEFAULT_PATH REQUIRED)
+        endif()
         target_link_libraries(dds_cpp_objects PUBLIC
             "${RTI_NDDSCPP2_LIBRARY}"
             "${RTI_NDDSC_LIBRARY}"
@@ -195,10 +168,29 @@ if(DDSCPP_ENABLE_RTI)
     set(DDSCPP_RTI_RUNTIME_DIR "${RTI_PLATFORM_DIR}" CACHE INTERNAL "RTI runtime directory")
 endif()
 
+if(DDSCPP_BUILD_MODULES)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/AutoMessageModules.cmake")
+else()
+    set(DDSCLIENT_AUTO_MODULES "")
+endif()
+
+if(DDSCPP_PREGENERATED_DIR)
+    set(DDSCPP_GENERATED_DIR "${DDSCPP_PREGENERATED_DIR}/DDSSim")
+else()
+    set(DDSCPP_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated/DDSSim")
+endif()
+set(DDSCPP_CLI_REGISTRY_DIR "${CMAKE_CURRENT_BINARY_DIR}/cli-generated")
+
 if(DDSCPP_ENABLE_RTI AND DDSCPP_BUILD_CLI)
-    add_executable(ddsclient tools/ddsclient.cpp)
-    target_link_libraries(ddsclient PRIVATE dds_cpp_objects ${RTI_APPUTILS_LIBRARY})
-    target_include_directories(ddsclient PRIVATE include "${DDSCPP_GENERATED_DIR}")
+    if(NOT TARGET dds_module_DDSSim)
+        message(FATAL_ERROR "CLI는 DDSSim 모듈이 필요합니다. Core 단독 빌드는 DDSCPP_BUILD_CLI=OFF를 지정하세요.")
+    endif()
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../cli/codegen/generate-registry.py"
+        --dds-sim "${DDSCPP_DEFINITIONS_DIR}/DDSSim.xml" --output-dir "${DDSCPP_CLI_REGISTRY_DIR}"
+        COMMAND_ERROR_IS_FATAL ANY)
+    add_executable(ddsclient "${CMAKE_CURRENT_SOURCE_DIR}/../cli/cpp/ddsclient.cpp")
+    target_link_libraries(ddsclient PRIVATE dds_cpp_objects dds_module_DDSSim ${RTI_APPUTILS_LIBRARY})
+    target_include_directories(ddsclient PRIVATE core/include ${DDSCPP_PRIVATE_INCLUDE_DIRS} "${DDSCPP_GENERATED_DIR}" "${DDSCPP_CLI_REGISTRY_DIR}")
     if(WIN32)
         target_compile_options(ddsclient PRIVATE /utf-8)
         add_custom_command(TARGET ddsclient POST_BUILD
@@ -226,7 +218,7 @@ if(DDSCPP_BUILD_STATIC)
     add_library(dds_cpp_static STATIC $<TARGET_OBJECTS:dds_cpp_objects>)
     target_link_libraries(dds_cpp_static PUBLIC dds_cpp_objects)
     target_include_directories(dds_cpp_static PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/core/include>"
         "$<INSTALL_INTERFACE:include>")
     if(WIN32)
         set(DDSCPP_STATIC_OUTPUT_NAME dds_cpp_static)
@@ -239,10 +231,12 @@ if(DDSCPP_BUILD_STATIC)
 endif()
 
 if(DDSCPP_BUILD_SHARED)
+    # 인라인 공개 API 심볼은 실제로 컴파일하는 객체 타깃에서 내보낸다.
+    target_compile_definitions(dds_cpp_objects PRIVATE DDSCPP_BUILDING_DLL=1)
     add_library(dds_cpp_shared SHARED $<TARGET_OBJECTS:dds_cpp_objects>)
     target_link_libraries(dds_cpp_shared PUBLIC dds_cpp_objects)
     target_include_directories(dds_cpp_shared PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/core/include>"
         "$<INSTALL_INTERFACE:include>")
     target_compile_definitions(dds_cpp_shared PRIVATE DDSCPP_BUILDING_DLL=1)
     set_target_properties(dds_cpp_shared PROPERTIES
@@ -271,22 +265,31 @@ if(DDSCPP_BUILD_SHARED)
 endif()
 
 if(DDSCPP_BUILD_TESTS)
+    foreach(fixture IN ITEMS DDSSim Telemetry)
+        if(NOT TARGET dds_module_${fixture})
+            message(FATAL_ERROR "선택한 예제 테스트의 모듈이 없습니다: ${fixture}")
+        endif()
+    endforeach()
     enable_testing()
-    add_executable(dds_cpp_smoke_tests tests/smoke_tests.cpp)
-    target_link_libraries(dds_cpp_smoke_tests PRIVATE dds_cpp_objects)
-    target_include_directories(dds_cpp_smoke_tests PRIVATE include)
+    add_executable(dds_cpp_smoke_tests tests/smoke_tests.cpp tests/rti_tests.cpp)
+    target_link_libraries(dds_cpp_smoke_tests PRIVATE dds_cpp_objects dds_module_DDSSim dds_module_Telemetry)
+    target_include_directories(dds_cpp_smoke_tests PRIVATE core/include ${DDSCPP_PRIVATE_INCLUDE_DIRS})
     add_test(NAME dds_cpp_smoke_tests COMMAND dds_cpp_smoke_tests)
     set_tests_properties(dds_cpp_smoke_tests PROPERTIES
-        TIMEOUT 30
+        TIMEOUT 90
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
     find_package(Python3 QUIET COMPONENTS Interpreter)
-    set(DDS_CONTRACT_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/../DDS_Nuget/tools/validate-dds.py")
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME dds_registry_generator COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/codegen/test_generate_registry.py")
+        set_tests_properties(dds_registry_generator PROPERTIES TIMEOUT 30)
+    endif()
+    set(DDS_CONTRACT_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/codegen/validate-dds.py")
     if(Python3_Interpreter_FOUND AND EXISTS "${DDS_CONTRACT_VALIDATOR}")
         set(DDS_CONTRACT_VALIDATOR_ARGS
             --cpp-root "${CMAKE_CURRENT_SOURCE_DIR}")
         if(DDSCPP_ENABLE_RTI)
             list(APPEND DDS_CONTRACT_VALIDATOR_ARGS
-                --cpp-registry "${DDSCPP_GENERATED_DIR}/dds_cpp_rti_type_registry.inc"
+                --cpp-registry "${DDSCPP_CLI_REGISTRY_DIR}/dds_cpp_rti_type_registry.inc"
                 --require-cpp-generated)
         endif()
         add_test(NAME dds_contract_parity
@@ -295,26 +298,28 @@ if(DDSCPP_BUILD_TESTS)
     endif()
     if(TARGET ddsclient)
         add_test(NAME ddsclient_cli_list COMMAND ddsclient list
-            --config "${DDSCPP_DEFINITIONS_DIR}/dds_client.xml")
+            --qos "${DDSCPP_DEFINITIONS_DIR}/qos_profiles.xml")
         add_test(NAME ddsclient_cli_publish COMMAND ddsclient publish TimeTickInformation
-            --config "${DDSCPP_DEFINITIONS_DIR}/dds_client.xml")
+            --domain 77 --wait-timeout-ms 100 --wait-for-subscribers 2147483647
+            --qos "${DDSCPP_DEFINITIONS_DIR}/qos_profiles.xml")
+        set_tests_properties(ddsclient_cli_publish PROPERTIES WILL_FAIL TRUE)
         set_tests_properties(ddsclient_cli_list ddsclient_cli_publish PROPERTIES TIMEOUT 30)
     endif()
     if(WIN32 AND TARGET ddsclient)
         find_program(POWERSHELL_EXECUTABLE NAMES pwsh powershell)
         find_program(DOTNET_EXECUTABLE NAMES dotnet)
         set(DDS_CSHARP_CLI_PROJECT
-            "${CMAKE_CURRENT_SOURCE_DIR}/../DDS_Nuget/src/DdsAmbassador.DDSClient.Cli/DdsAmbassador.DDSClient.Cli.csproj")
+            "${CMAKE_CURRENT_SOURCE_DIR}/../cli/csharp/DdsAmbassador.DDSClient.Cli.csproj")
         if(POWERSHELL_EXECUTABLE AND DOTNET_EXECUTABLE AND EXISTS "${DDS_CSHARP_CLI_PROJECT}")
             add_test(NAME dds_csharp_cpp_interop
                 COMMAND "${POWERSHELL_EXECUTABLE}"
                     -NoProfile
                     -ExecutionPolicy Bypass
-                    -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/test-interop.ps1"
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/../cli/tests/test-interop.ps1"
                     -CppCli "$<TARGET_FILE:ddsclient>"
                     -Dotnet "${DOTNET_EXECUTABLE}"
                     -CSharpProject "${DDS_CSHARP_CLI_PROJECT}"
-                    -Config "${DDSCPP_DEFINITIONS_DIR}/dds_client.rti-multicast.xml")
+                    -Definitions "${DDSCPP_DEFINITIONS_DIR}")
             set_tests_properties(dds_csharp_cpp_interop PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
         endif()
     endif()
@@ -345,17 +350,16 @@ if(TARGET dds_cpp_shared)
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 endif()
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/dds_cpp"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(DIRECTORY "${DDSCPP_DEFINITIONS_DIR}/"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/dds_cpp/definitions"
-    FILES_MATCHING PATTERN "*.xml")
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/core/include/dds_cpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" PATTERN "testing" EXCLUDE)
+install(FILES "${DDSCPP_DEFINITIONS_DIR}/qos_profiles.xml"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/dds_cpp/definitions")
+if(EXISTS "${DDSCPP_DEFINITIONS_DIR}/networks")
+    install(DIRECTORY "${DDSCPP_DEFINITIONS_DIR}/networks/"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/dds_cpp/definitions/networks" FILES_MATCHING PATTERN "*.xml")
+endif()
 
 if(DDSCPP_ENABLE_RTI)
-    install(FILES
-        "${DDSCPP_GENERATED_DIR}/DDSSim.hpp"
-        "${DDSCPP_GENERATED_DIR}/DDSSimPlugin.hpp"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
     if(DDSCPP_INSTALL_RTI_RUNTIME AND WIN32)
         install(FILES
             "${RTI_PLATFORM_DIR}/nddscpp2.dll"

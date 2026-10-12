@@ -89,6 +89,8 @@ if(UNIX)
 endif()
 
 add_library(DDSClient::rti INTERFACE IMPORTED)
+set_property(TARGET DDSClient::rti PROPERTY
+    INTERFACE_COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 set_target_properties(DDSClient::rti PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES
         "${DDSClient_RTI_HOME}/include;${DDSClient_RTI_HOME}/include/ndds;${DDSClient_RTI_HOME}/include/ndds/hpp"
@@ -137,6 +139,9 @@ if(@DDSCLIENT_HAS_STATIC@)
 endif()
 
 add_library(DDSClient::dds_cpp INTERFACE IMPORTED)
+set_property(TARGET DDSClient::dds_cpp PROPERTY INTERFACE_COMPILE_FEATURES cxx_std_20)
+set_property(TARGET DDSClient::dds_cpp PROPERTY
+    INTERFACE_COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 if(DDSClient_USE_STATIC_LIBS)
     if(NOT TARGET DDSClient::dds_cpp_static)
         message(FATAL_ERROR "This DDSClient package does not contain a static library.")
@@ -150,5 +155,18 @@ else()
     set_property(TARGET DDSClient::dds_cpp PROPERTY
         INTERFACE_LINK_LIBRARIES DDSClient::dds_cpp_shared)
 endif()
+
+foreach(_ddsclient_module IN ITEMS @DDSCLIENT_AUTO_MODULES@)
+    add_library(DDSClient::${_ddsclient_module} STATIC IMPORTED)
+    if(WIN32)
+        set(_ddsclient_module_file "dds_module_${_ddsclient_module}.lib")
+    else()
+        set(_ddsclient_module_file "libdds_module_${_ddsclient_module}.a")
+    endif()
+    set_target_properties(DDSClient::${_ddsclient_module} PROPERTIES
+        IMPORTED_LOCATION "${_ddsclient_library_dir}/${_ddsclient_module_file}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_ddsclient_include_dir}/dds_modules/${_ddsclient_module}"
+        INTERFACE_LINK_LIBRARIES DDSClient::dds_cpp)
+endforeach()
 
 check_required_components(DDSClient)
