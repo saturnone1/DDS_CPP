@@ -376,7 +376,7 @@ void test_qos_xml_parser(const std::filesystem::path&)
         output << "<dds><qos_library name='AmbassadorProfiles'>"
                   "<qos_profile name='ReliableReal&#116;ime'/></qos_library></dds>";
     }
-    require(dds_cpp::DdsConfigurationReader::Load(std::nullopt, file.string(), {dds_cpp::DDSSimMessages()}).Topics().size() == 16,
+    require(dds_cpp::DdsConfigurationReader::Load(std::nullopt, dds_cpp::detail::PathToUtf8(file), {dds_cpp::DDSSimMessages()}).Topics().size() == 16,
         "QoS XML character references were not decoded.");
     {
         std::ofstream output(file);
@@ -384,7 +384,7 @@ void test_qos_xml_parser(const std::filesystem::path&)
                   "<qos_profile name='ReliableRealtime'><broken></qos_profile></qos_library></dds>";
     }
     bool rejected = false;
-    try { (void)dds_cpp::DdsConfigurationReader::Load(std::nullopt, file.string()); }
+    try { (void)dds_cpp::DdsConfigurationReader::Load(std::nullopt, dds_cpp::detail::PathToUtf8(file)); }
     catch (const dds_cpp::DdsConfigurationException&) { rejected = true; }
     require(rejected, "Malformed nested QoS XML was accepted.");
 }
@@ -430,7 +430,7 @@ void test_qos_library_name_is_validated(const std::filesystem::path& definitions
     }
 
     auto options = in_memory_options(definitions);
-    options.QosProfilesXmlPath() = qos.string();
+    options.QosProfilesXmlPath() = dds_cpp::detail::PathToUtf8(qos);
     bool threw = false;
     try {
         (void)dds_cpp::DdsConfigurationReader::Load(options);
@@ -448,11 +448,11 @@ void test_configuration_root_is_validated(const std::filesystem::path& definitio
     std::filesystem::create_directories(directory);
     const auto qos = directory / "qos_profiles.xml";
     std::filesystem::copy_file(definitions / "qos_profiles.xml", qos);
-    require(dds_cpp::DdsConfigurationReader::Load(std::nullopt, qos.string(), {dds_cpp::DDSSimMessages()}).Topics().size() == 16,
+    require(dds_cpp::DdsConfigurationReader::Load(std::nullopt, dds_cpp::detail::PathToUtf8(qos), {dds_cpp::DDSSimMessages()}).Topics().size() == 16,
         "Runtime configuration should not require DDSSim.xml.");
     { std::ofstream output(qos); output << "<wrong/>"; }
     bool threw = false;
-    try { (void)dds_cpp::DdsConfigurationReader::Load(std::nullopt, qos.string()); }
+    try { (void)dds_cpp::DdsConfigurationReader::Load(std::nullopt, dds_cpp::detail::PathToUtf8(qos)); }
     catch (const dds_cpp::DdsConfigurationException&) { threw = true; }
     std::filesystem::remove_all(directory);
     require(threw, "Wrong QoS root accepted.");

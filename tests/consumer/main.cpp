@@ -13,6 +13,7 @@ namespace Diagnostics = DdsModules_Diagnostics::Diagnostics;
 #endif
 
 int main()
+try
 {
 #ifdef DDSCLIENT_TEST_NETWORK_ISOLATION
     extern void test_network_isolation();
@@ -78,4 +79,9 @@ int main()
     std::lock_guard lock(mutex);
     if (!received || client.Configuration().Topics().size() != 1) return 1;
     std::cout << options.DomainId() << '\n';
+}
+catch (const std::exception& error)
+{
+    std::cerr << "Installed consumer failed: " << error.what() << '\n';
+    return 1;
 }

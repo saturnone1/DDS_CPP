@@ -10,7 +10,7 @@ namespace {
 void test_public_status_and_errors(const std::filesystem::path& definitions)
 {
     dds_cpp::DdsNetwork network("status-test", dds_cpp::DDSSimMessages(), 107,
-        (definitions / "networks/NetworkA.qos.xml").string(), "Network::Participant", "Network::Data");
+        dds_cpp::detail::PathToUtf8((definitions / "networks/NetworkA.qos.xml")), "Network::Participant", "Network::Data");
     auto options = network.CreateClientOptions(std::vector<dds_cpp::TopicDefinition>{dds_cpp::Topic::Both<MSG::TimeTickInformation>()});
     options.ShutdownTimeout() = 30ms;
     auto client = dds_cpp::DdsClient::Connect(options);
@@ -96,16 +96,6 @@ void test_close_requests_all_readers_before_shared_deadline()
 
 void test_multicast_override_uses_parsed_qos(const std::filesystem::path& definitions)
 {
-    struct RestoreEnvironment {
-        std::string name;
-        std::optional<std::string> value;
-        explicit RestoreEnvironment(const char* key) : name(key) {
-            if (const auto* current = std::getenv(key)) value = current;
-        }
-        ~RestoreEnvironment() { set_environment(name.c_str(), value ? value->c_str() : nullptr); }
-    } general("DDS_MULTICAST_ADDRESS"), receive("DDS_MULTICAST_RECEIVE_ADDRESS");
-    set_environment("DDS_MULTICAST_ADDRESS", nullptr);
-    set_environment("DDS_MULTICAST_RECEIVE_ADDRESS", "239.255.5.99");
     const auto file = std::filesystem::temp_directory_path() /
         ("dds-override-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
     struct RemoveFile {
@@ -121,9 +111,8 @@ void test_multicast_override_uses_parsed_qos(const std::filesystem::path& defini
     xml.insert(position, "<qos_profile name='Inherited' base_name='AmbassadorProfiles::ReliableRealtime'/>");
     { std::ofstream output(file); output << xml; }
     {
-        dds_cpp::detail::RtiReaderQosOverride effective(file.string(), "239.255.5.99");
-        dds::core::QosProvider provider(effective.path());
-        effective.validate(provider);
+        dds_cpp::detail::RtiReaderQosOverride effective(dds_cpp::detail::PathToUtf8(file), "239.255.5.99");
+        dds::core::QosProvider provider(dds_cpp::detail::RtiFilePath(effective.path()));
         for (const auto* name : {"AmbassadorProfiles::ReliableRealtime", "AmbassadorProfiles::Inherited"}) {
             const auto qos = effective.ReaderQos(provider, name);
             const auto settings = qos.policy<rti::core::policy::TransportMulticast>().settings();
@@ -136,10 +125,10 @@ void test_multicast_override_uses_parsed_qos(const std::filesystem::path& defini
     }
     { std::ofstream output(file); output << "<dds><qos_library name='AmbassadorProfiles'><qos_profile name='ReliableRealtime'/></qos_library></dds>"; }
     {
-        dds_cpp::detail::RtiReaderQosOverride effective(file.string(), "239.255.5.99");
-        dds::core::QosProvider provider(effective.path());
+        dds_cpp::detail::RtiReaderQosOverride effective(dds_cpp::detail::PathToUtf8(file), "239.255.5.99");
+        dds::core::QosProvider provider(dds_cpp::detail::RtiFilePath(effective.path()));
         bool rejected = false;
-        try { effective.validate(provider); }
+        try { (void)effective.ReaderQos(provider, "AmbassadorProfiles::ReliableRealtime"); }
         catch (const dds_cpp::DdsConfigurationException&) { rejected = true; }
         require(rejected, "Override silently accepted profiles with no multicast settings.");
     }
@@ -150,7 +139,7 @@ void test_first_response_published_from_handler(const std::filesystem::path& def
     // Both peers run on loopback. No Response writer or topic is created on the
     // server before the request arrives: this used to fail inside RTI's listener EA.
     dds_cpp::DdsNetwork network("response-regression", dds_cpp::DDSSimMessages(), 106,
-        (definitions / "networks/NetworkA.qos.xml").string(), "Network::Participant", "Network::Data");
+        dds_cpp::detail::PathToUtf8((definitions / "networks/NetworkA.qos.xml")), "Network::Participant", "Network::Data");
     auto server = dds_cpp::DdsClient::Connect(network.CreateClientOptions(std::vector<dds_cpp::TopicDefinition>{
         dds_cpp::Topic::Named<MSG::TimeTickInformation>("Request", dds_cpp::TopicDirection::Subscribe),
         dds_cpp::Topic::Named<MSG::TimeTickInformation>("Response", dds_cpp::TopicDirection::Publish)}));
@@ -249,7 +238,7 @@ void test_two_udp_network_bursts(const std::filesystem::path& definitions)
     { std::ofstream output(file); output << xml; }
     auto a = in_memory_options(definitions);
     a.DomainId() = 88;
-    a.QosProfilesXmlPath() = file.string();
+    a.QosProfilesXmlPath() = dds_cpp::detail::PathToUtf8(file);
     a.MulticastReceiveAddress() = "239.255.5.88";
     a.Topics() = std::vector<dds_cpp::TopicDefinition>{dds_cpp::Topic::Named<MSG::TimeTickInformation>("SharedTopic")};
     auto b = a;

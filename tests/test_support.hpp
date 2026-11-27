@@ -5,6 +5,7 @@
 #include "ClientAccess.hpp"
 #include "InMemoryDdsTransport.hpp"
 #include "DdsConfigurationReader.hpp"
+#include "dds_cpp/configuration/DdsUnicode.hpp"
 
 #include <chrono>
 #include <atomic>
@@ -82,7 +83,7 @@ inline dds_cpp::DdsClientOptions in_memory_options(const std::filesystem::path& 
 {
     dds_cpp::DdsClientOptions options;
     options.MessageModules() = {dds_cpp::DDSSimMessages()};
-    options.QosProfilesXmlPath() = (definitions / "qos_profiles.xml").string();
+    options.QosProfilesXmlPath() = dds_cpp::detail::PathToUtf8(definitions / "qos_profiles.xml");
     return options;
 }
 

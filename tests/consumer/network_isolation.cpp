@@ -1,4 +1,5 @@
 #include "dds_cpp/DdsCpp.hpp"
+#include "dds_cpp/configuration/DdsUnicode.hpp"
 #include "NetworkA_messages.hpp"
 #include "NetworkB_messages.hpp"
 #include <mutex>
@@ -30,7 +31,8 @@ void test_network_isolation()
     if (!rejected) throw std::runtime_error("Cross-network QoS profile accepted.");
     if (dds::topic::topic_type_name<A::Status>::value() != "Common::Status" ||
         dds::topic::topic_type_name<B::Status>::value() != "Common::Status") throw std::runtime_error("Wire name changed.");
-    dds::core::QosProvider qos_a(path_a), qos_b(path_b);
+    dds::core::QosProvider qos_a(dds_cpp::detail::RtiFilePath(path_a)),
+        qos_b(dds_cpp::detail::RtiFilePath(path_b));
     if (qos_a.datareader_qos("Network::Data").policy<rti::core::policy::TransportMulticast>().settings()[0].receive_address() != "239.255.7.11" ||
         qos_b.datareader_qos("Network::Data").policy<rti::core::policy::TransportMulticast>().settings()[0].receive_address() != "239.255.7.12")
         throw std::runtime_error("QoS providers leaked same-named profiles.");
