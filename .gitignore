@@ -1,8 +1,11 @@
 build/
 build-*/
 artifacts/
+generated/
 out/
 bin/
 lib/
 *.user
 *.suo
+__pycache__/
+*.pyc

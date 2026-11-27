@@ -1,157 +1,53 @@
-# DDSCPP
+# DDS C++ client
 
-C++20 DDS client library backed by RTI Connext DDS. `DDSSim.xml` is converted
-to Modern C++ types during the build, and `topics.xml` generates the runtime
-type registry used by the transport.
+C++20 RTI Connext DDS core with independently generated message modules,
+static/shared libraries, and CMake consumer targets. RTI Connext DDS 7.3.1
+is required; the in-memory transport is an internal test implementation.
 
-## Prerequisites
+This repository is the `DDSCPP/` submodule of
+[DDSClient](https://github.com/saturnone1/DDSClient). Build it from that parent
+checkout: shared XML definitions, code generators, CLI sources, and build
+helpers are intentionally maintained there. A standalone clone does not
+contain those inputs.
 
-- RTI Connext DDS 7.3.1 or a compatible installation
-- A valid RTI license
-- CMake 3.20+
-- Visual Studio on Windows
+## Build and test
 
-The build locates RTI through `DDSCPP_RTI_HOME`, `NDDSHOME`, or the newest
-`C:/Program Files/rti_connext_dds-*` installation.
-
-## Build
+On Windows, use PowerShell 7 with CMake, Python, Visual Studio x64 C++ tools,
+and RTI Connext installed:
 
 ```powershell
-cmake -S DDSCPP -B DDSCPP/build -DDDSCPP_ENABLE_RTI=ON
-cmake --build DDSCPP/build --config Release
-ctest --test-dir DDSCPP/build -C Release --output-on-failure
+git clone --recurse-submodules https://github.com/saturnone1/DDSClient.git
+cd DDSClient
+./build.ps1 -Language Cpp -Target Windows -WithTests -WithCli
 ```
 
-Use `-DDDSCPP_ENABLE_RTI=OFF` for an in-memory-only build. RTI builds generate
-`DDSSim.hpp`, `DDSSim.cxx`, and the topic registry under `build/generated`.
-Required RTI DLLs are copied beside the DDSCPP shared library and test binary.
+For Rocky Linux and offline packaging, use the parent
+[build guide](https://github.com/saturnone1/DDSClient/blob/main/docs/build.md).
+RTI installation files, native libraries, and a valid runtime license must
+be supplied separately under their applicable terms.
 
-### Rocky Linux 9.7
+## Structure
 
-Install the matching RTI host tools and an `x64Linux*` or `arm64Linux*` target
-package, then point `NDDSHOME` at that installation:
+- `core/include/dds_cpp/`: public API, configuration, and transport contracts
+- `core/src/`: connection lifecycle, configuration, and RTI transport
+- `cmake/`: generated message-module integration and installed package config
+- `tests/`: lifecycle, delivery, network isolation, and consumer tests
+- `generated/`: message modules produced from the parent's `definitions/*.xml`
 
-```bash
-export NDDSHOME=/opt/rti_connext_dds-7.3.1
-cmake -S DDSCPP -B DDSCPP/build-linux \
-  -DCMAKE_BUILD_TYPE=Release -DDDSCPP_ENABLE_RTI=ON
-cmake --build DDSCPP/build-linux
-ctest --test-dir DDSCPP/build-linux --output-on-failure
-cmake --install DDSCPP/build-linux --prefix DDSCPP/artifacts/rocky9.7
+Use `<dds_cpp/DdsCpp.hpp>` as the public entry point. New message schemas
+produce separate modules without coupling their generated types to the core.
+Connection options select modules, topics, domain, and QoS; independent
+connections own their runtime resources. Shutdown exposes bounded cleanup
+state instead of letting an unresponsive callback block indefinitely.
+
+After building from the parent checkout, install with:
+
+```powershell
+cmake --install DDSCPP/build --config Release --prefix DDSCPP/artifacts/install
 ```
 
-The Linux shared library records the RTI platform directory as its build RPATH.
-For deployment, place `libnddscpp2.so`, `libnddsc.so`, and `libnddscore.so`
-beside the application or expose their directory through `LD_LIBRARY_PATH`.
-
-When code generation runs on a Windows host and compilation runs in Linux, pass
-the Windows-generated directory to Linux CMake:
-
-```bash
-cmake -S DDSCPP -B DDSCPP/build-linux \
-  -DDDSCPP_ENABLE_RTI=ON -DDDSCPP_RTI_HOME=/opt/rti_connext_dds-7.3.1 \
-  -DDDSCPP_PREGENERATED_DIR=/src/DDSCPP/build/generated
-```
-
-An in-memory Linux container build that does not require proprietary RTI files
-is also provided:
-
-```bash
-docker build -f DDSCPP/Dockerfile.linux -t ddscpp-linux .
-```
-
-Override the base image for a compatibility build, for example:
-
-```bash
-docker build --build-arg ROCKY_VERSION=10 -f DDSCPP/Dockerfile.linux \
-  -t ddscpp-rocky10 .
-```
-
-The container build uses `rockylinux/rockylinux:9.7`. RTI Connext DDS 7.3.1
-officially supports the equivalent Red Hat Enterprise Linux 9 platform through
-the `x64Linux4gcc7.3.0` target package. The project and RTI 7.3.1 libraries have
-also been build-and-runtime tested on Rocky Linux 10 with GCC 14.3/glibc 2.39,
-but Rocky/RHEL 10 is not an officially listed Connext 7.3.1 target. Use a
-Connext release that explicitly supports RHEL 10 when vendor-supported Rocky 10
-production deployment is required.
-
-## Definitions workflow
-
-Edit the files under `DDS_Nuget/definitions`:
-
-- `DDSSim.xml`: enum, struct, sequence, array, and message definitions
-- `topics.xml`: topic name, QoS profile, and publish/subscribe direction
-- `qos_profiles.xml`: RTI DataWriter/DataReader QoS
-- `dds_client*.xml`: domain, transport, participant, peers, and file paths
-
-Then rebuild. Changes to `DDSSim.xml` or `topics.xml` automatically rerun
-`rtiddsgen` and regenerate the C++ registry. Every `<topic name="X">` must have
-a matching `MSG::X` struct in `DDSSim.xml`.
-
-## NuGet-compatible typed API
-
-```cpp
-#include <dds_cpp/dds_cpp.hpp>
-
-auto client = dds_cpp::DdsClient::Connect(
-    "DDS_Nuget/definitions/dds_client.rti-multicast.xml");
-
-auto subscription = client.Subscribe<MSG::TimeTickInformation>(
-    [](const MSG::TimeTickInformation& sample) {
-        std::cout << sample.TimeTickMessage().TimeTick() << '\n';
-    });
-
-MSG::TimeTickInformation sample;
-sample.TimeTickMessage().TimeTick(1);
-sample.TimeTickMessage().SyncCycle(0);
-client.Publish(sample);
-```
-
-The public workflow and method names mirror the NuGet package. Topic names are
-resolved from the unqualified C++ type name, exactly like C# `typeof(T).Name`.
-`CreatePublisher<T>()`, `CreateSubscriber<T>()`, explicit-topic overloads,
-direction validation, configuration access, and publisher handles are also
-available. See [docs/api-parity.md](docs/api-parity.md) for the complete mapping.
-Installation, connection and API examples are in
-[docs/library-usage.md](docs/library-usage.md) (Korean).
-
-## NuGet-compatible CLI
-
-RTI builds also produce `ddsclient` (`ddsclient.exe` on Windows) with the same
-commands and aliases as `DdsAmbassador.DDSClient.Cli`:
-
-```text
-ddsclient list [--config <path>]
-ddsclient shell [--config <path>]
-ddsclient idle [--config <path>]
-ddsclient publish <MessageName> [--config <path>] [--json <path>|--stdin] [--repeat <n>] [--interval-ms <n>]
-ddsclient subscribe <MessageName> [--config <path>] [--count <n>] [--timeout-ms <n>]
-```
-
-The shell supports `list`, `status`, `publish`/`send`, `subscribe`/`listen`,
-`unsubscribe`/`unsub`, `help`, and `exit`. JSON is converted through the RTI
-DynamicData type generated from `DDSSim.xml`, so nested fields and enums use the
-same message definition rather than a hand-written topic-specific parser.
-`--repeat`/`--interval-ms` keep one publisher participant alive for deterministic
-tests. `--count`/`--timeout-ms` make a subscriber exit with success after the
-requested samples or fail on timeout.
-
-Generated RTI types are available through `dds_cpp/generated_types.hpp`, which
-is included by `dds_cpp/dds_cpp.hpp`. Raw byte publish/subscribe remains
-available for the in-memory transport; RTI requires generated typed messages.
-
-Configuration values from environment variables override XML values. Supported
-variables include `DDS_CLIENT_CONFIG_PATH`, `DDS_DOMAIN_ID`,
-`DDS_USE_RTI_TRANSPORT`, `DDS_PARTICIPANT_NAME`, `DDS_INITIAL_PEERS`,
-`DDS_TOPICS_XML_PATH`, `DDS_QOS_PROFILES_XML_PATH`, `DDS_DDSSIM_XML_PATH`, and
-`DDS_LOG_LEVEL`.
-
-Configuration resolution is intentionally simple:
-
-- `Connect()` and `Connect(path)` call `DdsClientOptions::Load`, so environment
-  variables override XML values.
-- `Connect(options)` uses the supplied options exactly. It does not silently
-  read environment variables again.
-- Empty definition paths in direct options use `definitions` beside the
-  executable, under the current directory, or in an installed
-  `share/dds_cpp/definitions` directory.
+Installed consumers use `find_package(DDSClient CONFIG REQUIRED)` and the
+static/shared targets documented in the parent
+[C++ guide](https://github.com/saturnone1/DDSClient/blob/main/docs/cpp.md).
+See also the parent [configuration guide](https://github.com/saturnone1/DDSClient/blob/main/docs/configuration.md)
+and [architecture guide](https://github.com/saturnone1/DDSClient/blob/main/docs/architecture.md).
